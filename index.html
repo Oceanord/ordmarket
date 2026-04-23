@@ -189,7 +189,7 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 32px
     <div class="nlink" onclick="showPanel('stats')">Stats</div>
   </div>
   <div class="nav-r">
-    <div class="btc-price">&#8383; <span id="btc-live">$66,480</span> <span id="btc-change" style="font-size:10px;margin-left:4px;color:#22c55e"></span></div>
+    <div class="btc-price">&#8383; <span id="btc-live" style="color:#22c55e">$78,277</span> <span id="btc-change" style="font-size:10px;margin-left:4px;color:#22c55e"></span></div>
     <button class="btn-wallet" onclick="document.getElementById('wallet-overlay').classList.add('on')">Connect Wallet</button>
   </div>
 </nav>
@@ -203,9 +203,9 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 32px
       <p>Trade, collect and discover inscribed art on Bitcoin. Real-time floor prices, volume and on-chain sales data.</p>
     </div>
     <div class="hero-stats">
-      <div class="hstat"><div class="hstat-val" id="hero-vol">$170,000</div><div class="hstat-label">24h Volume</div></div>
-      <div class="hstat"><div class="hstat-val" id="hero-sales">329</div><div class="hstat-label">Sales Today</div></div>
-      <div class="hstat"><div class="hstat-val">2,790</div><div class="hstat-label">Collections</div></div>
+      <div class="hstat"><div class="hstat-val" id="hero-vol">$14.8M</div><div class="hstat-label">24h Volume</div></div>
+      <div class="hstat"><div class="hstat-val" id="hero-sales">38,204</div><div class="hstat-label">Sales Today</div></div>
+      <div class="hstat"><div class="hstat-val">9,812</div><div class="hstat-label">Collections</div></div>
     </div>
   </div>
   <div class="ticker"><div class="ticker-track" id="ticker-track"></div></div>
@@ -334,7 +334,7 @@ nav{display:flex;align-items:center;justify-content:space-between;padding:0 32px
 let collections = [];       // final merged list (live + pinned)
 let sortedCollections = []; // current sort order
 let activeCategory = 'all';
-let liveBTCPrice = 66480;
+let liveBTCPrice = 78300;
 let connectedWallet = null;
 let connectedAddress = null;
 let connectedWalletType = null;
@@ -574,7 +574,7 @@ function renderList() {
           <div class="coll-sub">${c.items ? c.items.toLocaleString()+' items' : '&#8212;'} &nbsp;&middot;&nbsp; ${c.by||''}</div>
         </div>
       </div>
-      <div class="cell orange">${floor > 0 ? floor+' BTC' : '&#8212;'}<br><span style="font-size:10px;color:var(--muted2)">${floor > 0 ? '$'+floorUSD.toLocaleString() : ''}</span></div>
+      <div class="cell orange">${floor > 0 ? floor+' BTC' : '&#8212;'}<br><span data-floor="${floor}" style="font-size:10px;color:var(--muted2)">${floor > 0 ? '$'+floorUSD.toLocaleString() : ''}</span></div>
       <div class="cell">${vol24 > 0 ? vol24+' BTC' : '&#8212;'}</div>
       <div class="cell">${totalVol > 0 ? totalVol+' BTC' : '&#8212;'}</div>
       <div class="cell ${ch >= 0 ? 'green' : 'red'}">${sales24 > 0 ? sales24 : '&#8212;'}<br><span style="font-size:10px">${ch !== 0 ? (ch>=0?'+':'')+ch+'%' : ''}</span></div>
@@ -847,31 +847,62 @@ async function initiateBuy(inscriptionId, inscriptionNum) {
 }
 
 /* ═══════════════════════════════════════════
-   LIVE BTC PRICE — Binance primary, CoinCap fallback
+   LIVE BTC PRICE
+   Primary:  Binance (price + 24hr change)
+   Fallback: CoinGecko
+   Final:    CoinCap
 ═══════════════════════════════════════════ */
 function updatePriceUI(price, change) {
   liveBTCPrice = Math.round(price);
-  document.getElementById('btc-live').textContent = '$' + price.toLocaleString(undefined,{maximumFractionDigits:0});
-  document.getElementById('btc-live').style.color = change >= 0 ? '#22c55e' : '#ef4444';
+  const el = document.getElementById('btc-live');
   const ch = document.getElementById('btc-change');
-  if (ch) { ch.textContent = (change>=0?'\u25b2':'\u25bc') + Math.abs(change).toFixed(2)+'%'; ch.style.color = change>=0?'#22c55e':'#ef4444'; }
+  const isUp = change >= 0;
+  el.textContent = '$' + price.toLocaleString(undefined, {maximumFractionDigits:0});
+  el.style.color = isUp ? '#22c55e' : '#ef4444';
+  if (ch) {
+    ch.textContent = (isUp ? '\u25b2' : '\u25bc') + ' ' + Math.abs(change).toFixed(2) + '%';
+    ch.style.color = isUp ? '#22c55e' : '#ef4444';
+  }
+  // Refresh all USD floor prices in the table
+  document.querySelectorAll('[data-floor]').forEach(el => {
+    el.textContent = '$' + Math.round(parseFloat(el.dataset.floor) * liveBTCPrice).toLocaleString();
+  });
 }
 
 async function fetchBTCPrice() {
+  // 1. Binance — fastest, no key, fully CORS-open
   try {
-    const [tr, sr] = await Promise.all([
+    const [pr, sr] = await Promise.all([
       fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'),
       fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT')
     ]);
-    const t = await tr.json(), s = await sr.json();
-    updatePriceUI(parseFloat(t.price), parseFloat(s.priceChangePercent));
+    if (!pr.ok || !sr.ok) throw new Error('binance');
+    const price  = parseFloat((await pr.json()).price);
+    const change = parseFloat((await sr.json()).priceChangePercent);
+    updatePriceUI(price, change);
     return;
-  } catch(e) {}
+  } catch(e) { console.warn('Binance failed, trying CoinGecko...'); }
+
+  // 2. CoinGecko fallback
+  try {
+    const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true');
+    if (!r.ok) throw new Error('coingecko');
+    const d = await r.json();
+    updatePriceUI(d.bitcoin.usd, d.bitcoin.usd_24h_change);
+    return;
+  } catch(e) { console.warn('CoinGecko failed, trying CoinCap...'); }
+
+  // 3. CoinCap final fallback
   try {
     const r = await fetch('https://api.coincap.io/v2/assets/bitcoin');
+    if (!r.ok) throw new Error('coincap');
     const d = await r.json();
     updatePriceUI(parseFloat(d.data.priceUsd), parseFloat(d.data.changePercent24Hr));
-  } catch(e) {}
+  } catch(e) {
+    console.error('All BTC price APIs failed.');
+    const el = document.getElementById('btc-live');
+    if (el) el.style.color = '#ef4444';
+  }
 }
 
 /* ═══════════════════════════════════════════
@@ -893,8 +924,22 @@ function showToast(msg, type='info') {
    INIT
 ═══════════════════════════════════════════ */
 renderDrops();
-fetchBTCPrice().then(() => loadLiveCollections());
-setInterval(fetchBTCPrice, 30000);
+
+// 1. Show fallback data instantly — no waiting for any API
+buildCollectionList([]);
+
+// 2. Fetch live BTC price, then refresh USD values in the list
+fetchBTCPrice().then(() => {
+  // Re-render with correct USD values once we have the real price
+  if (collections.length) {
+    collections.forEach(c => { c.floorUSD = Math.round((c.floor||0) * liveBTCPrice); });
+    renderList();
+  }
+  // 3. Then try to load live collection data from Hiro API
+  loadLiveCollections();
+});
+
+setInterval(fetchBTCPrice, 15000);
 setInterval(loadLiveCollections, 300000);
 
 /*
